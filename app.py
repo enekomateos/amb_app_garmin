@@ -97,6 +97,39 @@ def debug_stop(stop_id):
     except Exception as e:
         return jsonify({"error": f"An unexpected error occurred during debug: {e}"}), 500
 
+@app.route('/debug/line/<line_prefix>')
+def debug_line(line_prefix):
+    try:
+        feed = gtfs_realtime_pb2.FeedMessage()
+        response = requests.get(GTFS_RT_URL)
+        response.raise_for_status()
+        feed.ParseFromString(response.content)
+
+        line_data = []
+
+        for entity in feed.entity:
+            if entity.HasField('trip_update') and entity.trip_update.trip.trip_id.startswith(line_prefix):
+                trip_id = entity.trip_update.trip.trip_id
+                stop_updates = []
+                for stop_time_update in entity.trip_update.stop_time_update:
+                    stop_updates.append(str(stop_time_update).replace('\n', ', '))
+                
+                line_data.append({
+                    "trip_id": trip_id,
+                    "stop_time_updates": stop_updates
+                })
+        
+        if line_data:
+            return jsonify(line_data)
+        else:
+            return jsonify({
+                "message": "No trip updates found for the specified line_prefix.",
+                "line_prefix_searched": line_prefix
+            }), 404
+
+    except Exception as e:
+        return jsonify({"error": f"An unexpected error occurred during debug: {e}"}), 500
+
 @app.route('/debug/all_stops')
 def debug_all_stops():
     try:
