@@ -8,7 +8,6 @@ app = Flask(__name__)
 
 # Configuration
 GTFS_RT_URL = "https://www.ambmobilitat.cat/transit/trips-updates/trips.bin"
-TARGET_STOP_ID = "000108"   # The bus stop you are interested in
 
 @app.route('/')
 def index():
@@ -29,10 +28,14 @@ def get_bus_time():
         now = time.time()
         next_arrival_min = None
 
+        # Clean the requested stop_id by removing leading zeros
+        cleaned_request_stop_id = stop_id.lstrip('0')
+
         for entity in feed.entity:
             if entity.HasField('trip_update') and entity.trip_update.trip.trip_id.startswith(line_prefix):
                 for stop_time_update in entity.trip_update.stop_time_update:
-                    if stop_time_update.stop_id == stop_id:
+                    # Clean the stop_id from the feed before comparing
+                    if stop_time_update.stop_id.lstrip('0') == cleaned_request_stop_id:
                         
                         event_time = None
                         if stop_time_update.HasField('arrival'):
@@ -73,11 +76,12 @@ def debug_stop(stop_id):
         feed.ParseFromString(response.content)
 
         stop_data = []
+        cleaned_request_stop_id = stop_id.lstrip('0')
 
         for entity in feed.entity:
             if entity.HasField('trip_update'):
                 for stop_time_update in entity.trip_update.stop_time_update:
-                    if stop_time_update.stop_id == stop_id:
+                    if stop_time_update.stop_id.lstrip('0') == cleaned_request_stop_id:
                         # Convert protobuf to a string for inspection
                         stop_info = str(stop_time_update).replace('\n', ', ')
                         trip_id = entity.trip_update.trip.trip_id
