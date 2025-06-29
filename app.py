@@ -57,6 +57,32 @@ def get_bus_time():
     except Exception as e:
         return jsonify({"error": f"An unexpected error occurred: {e}"}), 500
 
+@app.route('/debug')
+def debug_feed():
+    try:
+        feed = gtfs_realtime_pb2.FeedMessage()
+        response = requests.get(GTFS_RT_URL)
+        response.raise_for_status()
+        feed.ParseFromString(response.content)
+
+        routes = set()
+        stops = set()
+
+        for entity in feed.entity:
+            if entity.HasField('trip_update'):
+                routes.add(entity.trip_update.trip.route_id)
+                for stop_time_update in entity.trip_update.stop_time_update:
+                    stops.add(stop_time_update.stop_id)
+        
+        return jsonify({
+            "available_routes": sorted(list(routes)),
+            "available_stops": sorted(list(stops))
+        })
+
+    except Exception as e:
+        return jsonify({"error": f"An unexpected error occurred during debug: {e}"}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     app.run(host='0.0.0.0', port=port)
