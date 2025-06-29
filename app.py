@@ -66,6 +66,40 @@ def get_bus_time():
     except Exception as e:
         return jsonify({"error": f"An unexpected error occurred: {e}"}), 500
 
+@app.route('/debug_stop/<stop_id>')
+def debug_stop(stop_id):
+    try:
+        feed = gtfs_realtime_pb2.FeedMessage()
+        response = requests.get(GTFS_RT_URL)
+        response.raise_for_status()
+        feed.ParseFromString(response.content)
+
+        stop_data = []
+
+        for entity in feed.entity:
+            if entity.HasField('trip_update'):
+                for stop_time_update in entity.trip_update.stop_time_update:
+                    if stop_time_update.stop_id == stop_id:
+                        # Convert protobuf to a string for inspection
+                        stop_info = str(stop_time_update).replace('\n', ', ')
+                        trip_id = entity.trip_update.trip.trip_id
+                        stop_data.append({
+                            "trip_id": trip_id,
+                            "stop_time_update": stop_info
+                        })
+        
+        if stop_data:
+            return jsonify(stop_data)
+        else:
+            return jsonify({
+                "message": "No trip updates found for the specified stop_id.",
+                "stop_id_searched": stop_id
+            }), 404
+
+    except Exception as e:
+        return jsonify({"error": f"An unexpected error occurred during debug: {e}"}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     app.run(host='0.0.0.0', port=port)
