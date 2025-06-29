@@ -1,4 +1,4 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import requests
 from google.transit import gtfs_realtime_pb2
 import time
@@ -16,6 +16,10 @@ def index():
 
 @app.route('/bus_time')
 def get_bus_time():
+    # Get parameters from the query string, with default values
+    stop_id = request.args.get('stop', default='000108', type=str)
+    line_prefix = request.args.get('line_prefix', default='207.', type=str)
+
     try:
         feed = gtfs_realtime_pb2.FeedMessage()
         response = requests.get(GTFS_RT_URL)
@@ -24,22 +28,17 @@ def get_bus_time():
 
         now = time.time()
         next_arrival_min = None
-        trip_id_for_next_arrival = None
 
         for entity in feed.entity:
-            if entity.HasField('trip_update'):
+            if entity.HasField('trip_update') and entity.trip_update.trip.trip_id.startswith(line_prefix):
                 for stop_time_update in entity.trip_update.stop_time_update:
-                    if stop_time_update.stop_id == TARGET_STOP_ID:
+                    if stop_time_update.stop_id == stop_id:
                         
-                        arrival = stop_time_update.arrival
-                        departure = stop_time_update.departure
-                        
-                        # Use departure time if arrival time is not available
                         event_time = None
                         if stop_time_update.HasField('arrival'):
-                            event_time = arrival.time
+                            event_time = stop_time_update.arrival.time
                         elif stop_time_update.HasField('departure'):
-                            event_time = departure.time
+                            event_time = stop_time_update.departure.time
 
                         if event_time:
                             time_diff_min = round((event_time - now) / 60)
@@ -47,18 +46,17 @@ def get_bus_time():
                             if time_diff_min >= 0:
                                 if next_arrival_min is None or time_diff_min < next_arrival_min:
                                     next_arrival_min = time_diff_min
-                                    trip_id_for_next_arrival = entity.trip_update.trip.trip_id
 
         if next_arrival_min is not None:
             return jsonify({
-                "stop": TARGET_STOP_ID,
-                "arrival_min": next_arrival_min,
-                "trip_id_found": trip_id_for_next_arrival
+                "line": line_prefix.strip('.'),
+                "stop": stop_id,
+                "arrival_min": next_arrival_min
             })
         else:
             return jsonify({
-                "error": "Could not find any scheduled arrivals or departures for this stop.",
-                "stop": TARGET_STOP_ID
+                "error": f"Could not find arrival for line starting with {line_prefix} at this stop.",
+                "stop": stop_id
             }), 404
 
     except requests.RequestException as e:
@@ -99,6 +97,25 @@ def debug_stop(stop_id):
     except Exception as e:
         return jsonify({"error": f"An unexpected error occurred during debug: {e}"}), 500
 
+@app.route('/debug/all_stops')
+def debug_all_stops():
+    try:
+        feed = gtfs_realtime_pb2.FeedMessage()
+        response = requests.get(GTFS_RT_URL)
+        response.raise_for_status()
+        feed.ParseFromString(response.content)
+
+        stops = set()
+
+        for entity in feed.entity:
+            if entity.HasField('trip_update'):
+                for stop_time_update in entity.trip_update.stop_time_update:
+                    stops.add(stop_time_update.stop_id)
+        
+        return jsonify(sorted(list(stops)))
+
+    except Exception as e:
+        return jsonify({"error": f"An unexpected error occurred during debug: {e}"}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
