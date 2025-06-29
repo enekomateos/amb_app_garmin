@@ -2,3 +2,5 @@ Flask
 requests
 gtfs-realtime-bindings
 gunicorn
+pandas
+openpyxl
