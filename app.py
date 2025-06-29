@@ -9,7 +9,7 @@ app = Flask(__name__)
 # Configuration
 GTFS_RT_URL = "https://www.ambmobilitat.cat/transit/trips-updates/trips.bin"
 TARGET_ROUTE_ID = "L95"  # The bus line you are interested in
-TARGET_STOP_ID = "108"   # The bus stop you are interested in
+TARGET_STOP_ID = "000108"   # The bus stop you are interested in
 
 @app.route('/')
 def index():
@@ -25,25 +25,27 @@ def get_bus_time():
 
         now = time.time()
         next_arrival_min = None
+        trip_id_for_next_arrival = None
 
         for entity in feed.entity:
             if entity.HasField('trip_update'):
-                if entity.trip_update.trip.route_id == TARGET_ROUTE_ID:
-                    for stop_time_update in entity.trip_update.stop_time_update:
-                        if stop_time_update.stop_id == TARGET_STOP_ID:
-                            if stop_time_update.HasField('arrival'):
-                                arrival_time = stop_time_update.arrival.time
-                                time_diff_min = round((arrival_time - now) / 60)
-                                
-                                if time_diff_min >= 0:
-                                    if next_arrival_min is None or time_diff_min < next_arrival_min:
-                                        next_arrival_min = time_diff_min
+                for stop_time_update in entity.trip_update.stop_time_update:
+                    if stop_time_update.stop_id == TARGET_STOP_ID:
+                        if stop_time_update.HasField('arrival'):
+                            arrival_time = stop_time_update.arrival.time
+                            time_diff_min = round((arrival_time - now) / 60)
+                            
+                            if time_diff_min >= 0:
+                                if next_arrival_min is None or time_diff_min < next_arrival_min:
+                                    next_arrival_min = time_diff_min
+                                    trip_id_for_next_arrival = entity.trip_update.trip.trip_id
 
         if next_arrival_min is not None:
             return jsonify({
-                "line": TARGET_ROUTE_ID,
+                "line": TARGET_ROUTE_ID, # This is still a placeholder
                 "stop": TARGET_STOP_ID,
-                "arrival_min": next_arrival_min
+                "arrival_min": next_arrival_min,
+                "trip_id_found": trip_id_for_next_arrival
             })
         else:
             return jsonify({
