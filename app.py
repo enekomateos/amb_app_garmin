@@ -16,8 +16,8 @@ def index():
 @app.route('/bus_time')
 def get_bus_time():
     # Get parameters from the query string, with default values
-    stop_id = request.args.get('stop', default='000108', type=str)
-    line_prefix = request.args.get('line_prefix', default='207.', type=str)
+    stop_id = request.args.get('stop', default='108', type=str)
+    line_prefix = request.args.get('line_prefix', default='211.', type=str)
 
     try:
         feed = gtfs_realtime_pb2.FeedMessage()
@@ -26,17 +26,18 @@ def get_bus_time():
         feed.ParseFromString(response.content)
 
         now = time.time()
-        next_arrival_min = None
-
+        
         # Clean the requested stop_id by removing leading zeros
         cleaned_request_stop_id = stop_id.lstrip('0')
+
+        # First, try to find the specific line requested
+        next_arrival_min = None
+        found_line = line_prefix
 
         for entity in feed.entity:
             if entity.HasField('trip_update') and entity.trip_update.trip.trip_id.startswith(line_prefix):
                 for stop_time_update in entity.trip_update.stop_time_update:
-                    # Clean the stop_id from the feed before comparing
                     if stop_time_update.stop_id.lstrip('0') == cleaned_request_stop_id:
-                        
                         event_time = None
                         if stop_time_update.HasField('arrival'):
                             event_time = stop_time_update.arrival.time
@@ -45,20 +46,39 @@ def get_bus_time():
 
                         if event_time:
                             time_diff_min = round((event_time - now) / 60)
-                            
                             if time_diff_min >= 0:
                                 if next_arrival_min is None or time_diff_min < next_arrival_min:
                                     next_arrival_min = time_diff_min
+        
+        # If no arrival was found for the specific line, search for any line at that stop
+        if next_arrival_min is None:
+            for entity in feed.entity:
+                if entity.HasField('trip_update'):
+                    for stop_time_update in entity.trip_update.stop_time_update:
+                        if stop_time_update.stop_id.lstrip('0') == cleaned_request_stop_id:
+                            event_time = None
+                            if stop_time_update.HasField('arrival'):
+                                event_time = stop_time_update.arrival.time
+                            elif stop_time_update.HasField('departure'):
+                                event_time = stop_time_update.departure.time
+
+                            if event_time:
+                                time_diff_min = round((event_time - now) / 60)
+                                if time_diff_min >= 0:
+                                    if next_arrival_min is None or time_diff_min < next_arrival_min:
+                                        next_arrival_min = time_diff_min
+                                        found_line = entity.trip_update.trip.trip_id.split('.')[0]
+
 
         if next_arrival_min is not None:
             return jsonify({
-                "line": line_prefix.strip('.'),
+                "line": found_line,
                 "stop": stop_id,
                 "arrival_min": next_arrival_min
             })
         else:
             return jsonify({
-                "error": f"Could not find arrival for line starting with {line_prefix} at this stop.",
+                "error": f"Could not find any upcoming arrivals at stop {stop_id}.",
                 "stop": stop_id
             }), 404
 
