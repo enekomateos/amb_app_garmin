@@ -4,6 +4,8 @@ from google.transit import gtfs_realtime_pb2
 import time
 import os
 import pandas as pd
+import csv
+import json
 
 app = Flask(__name__)
 
@@ -27,6 +29,80 @@ stop_id_to_name = load_stop_names()
 def get_stop_name(stop_id):
     """Gets the stop name from the loaded dictionary, falling back to the ID."""
     return stop_id_to_name.get(stop_id.lstrip('0'), stop_id)
+
+def get_bus_info(route_short_name, direction_headsign=None):
+    # Find route_id for the given route_short_name
+    route_id = None
+    with open('GTFS_static/routes.txt', 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row['route_short_name'] == route_short_name:
+                route_id = row['route_id']
+                break
+
+    if not route_id:
+        return {"error": f"Route {route_short_name} not found"}
+
+    # Get all trips for this route
+    trip_ids = []
+    with open('GTFS_static/trips.txt', 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row['route_id'] == route_id:
+                if direction_headsign:
+                    if direction_headsign.lower() in row.get('trip_headsign', '').lower():
+                        trip_ids.append(row['trip_id'])
+                else:
+                    trip_ids.append(row['trip_id'])
+
+    if not trip_ids:
+        return {"error": f"No trips found for route {route_short_name} with direction {direction_headsign}"}
+
+    # Get stop times for these trips
+    stop_times = []
+    with open('GTFS_static/stop_times.txt', 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row['trip_id'] in trip_ids:
+                stop_times.append(row)
+
+    # Get stop names
+    stops = {}
+    with open('GTFS_static/stops.txt', 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            stops[row['stop_id']] = row['stop_name']
+
+    # Combine the data
+    route_schedule = {}
+    for stop_time in stop_times:
+        stop_id = stop_time['stop_id']
+        stop_name = stops.get(stop_id, "Unknown Stop")
+        arrival_time = stop_time['arrival_time']
+        
+        if stop_name not in route_schedule:
+            route_schedule[stop_name] = {
+                "stop_id": stop_id,
+                "stop_name": stop_name,
+                "times": []
+            }
+        
+        route_schedule[stop_name]["times"].append(arrival_time)
+
+    # Sort times for each stop
+    for stop_name in route_schedule:
+        route_schedule[stop_name]["times"] = sorted(list(set(route_schedule[stop_name]["times"])))
+
+    # Sort stops by stop_sequence
+    stop_sequences = {}
+    for stop_time in stop_times:
+        stop_id = stop_time['stop_id']
+        if stop_id not in stop_sequences:
+            stop_sequences[stop_id] = int(stop_time['stop_sequence'])
+
+    sorted_stops = sorted(route_schedule.values(), key=lambda x: stop_sequences.get(x['stop_id'], float('inf')))
+
+    return sorted_stops
 
 @app.route('/')
 def index():
@@ -99,150 +175,18 @@ def get_bus_time():
             return jsonify({
                 "error": f"Could not find any upcoming arrivals at stop {stop_id}.",
                 "stop": stop_id
-            }), 404
-
-    except requests.RequestException as e:
-        return jsonify({"error": f"Failed to fetch GTFS data: {e}"}), 500
+            })
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Failed to fetch real-time data: {e}"}), 500
     except Exception as e:
         return jsonify({"error": f"An unexpected error occurred: {e}"}), 500
 
-@app.route('/bus_data_dump')
-def get_bus_data_dump():
-    line_prefix = request.args.get('line_prefix', default='211', type=str)
+@app.route('/route_info/<string:route_name>/<string:direction>', methods=['GET'])
+def route_info(route_name, direction):
+    schedule = get_bus_info(route_name, direction)
+    if "error" in schedule:
+        return jsonify(schedule), 404
+    return jsonify(schedule)
 
-    try:
-        feed = gtfs_realtime_pb2.FeedMessage()
-        response = requests.get(GTFS_RT_URL)
-        response.raise_for_status()
-        feed.ParseFromString(response.content)
-
-        now = time.time()
-        data_dump = []
-
-        for entity in feed.entity:
-            if entity.HasField('trip_update') and entity.trip_update.trip.trip_id.startswith(line_prefix):
-                trip_id = entity.trip_update.trip.trip_id
-                for stop_time_update in entity.trip_update.stop_time_update:
-                    event_time = None
-                    event_type = None
-                    delay = None
-
-                    if stop_time_update.HasField('arrival') and stop_time_update.arrival.time > now:
-                        event_time = stop_time_update.arrival.time
-                        event_type = 'arrival'
-                        delay = stop_time_update.arrival.delay
-                    elif stop_time_update.HasField('departure') and stop_time_update.departure.time > now:
-                        event_time = stop_time_update.departure.time
-                        event_type = 'departure'
-                        delay = stop_time_update.departure.delay
-
-                    if event_time:
-                        time_until_event = round((event_time - now) / 60)
-                        data_dump.append({
-                            "trip_id": trip_id,
-                            "stop_id": stop_time_update.stop_id,
-                            "stop_name": get_stop_name(stop_time_update.stop_id),
-                            "event_type": event_type,
-                            "event_time_unix": event_time,
-                            "event_time_readable": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(event_time)),
-                            "time_until_event_min": time_until_event,
-                            "delay_sec": delay
-                        })
-        
-        return jsonify(data_dump)
-
-    except requests.RequestException as e:
-        return jsonify({"error": f"Failed to fetch GTFS data: {e}"}), 500
-    except Exception as e:
-        return jsonify({"error": f"An unexpected error occurred: {e}"}), 500
-
-@app.route('/debug_stop/<stop_id>')
-def debug_stop(stop_id):
-    try:
-        feed = gtfs_realtime_pb2.FeedMessage()
-        response = requests.get(GTFS_RT_URL)
-        response.raise_for_status()
-        feed.ParseFromString(response.content)
-
-        stop_data = []
-        cleaned_request_stop_id = stop_id.lstrip('0')
-
-        for entity in feed.entity:
-            if entity.HasField('trip_update'):
-                for stop_time_update in entity.trip_update.stop_time_update:
-                    if stop_time_update.stop_id.lstrip('0') == cleaned_request_stop_id:
-                        # Convert protobuf to a string for inspection
-                        stop_info = str(stop_time_update).replace('\n', ', ')
-                        trip_id = entity.trip_update.trip.trip_id
-                        stop_data.append({
-                            "trip_id": trip_id,
-                            "stop_time_update": stop_info
-                        })
-        
-        if stop_data:
-            return jsonify(stop_data)
-        else:
-            return jsonify({
-                "message": "No trip updates found for the specified stop_id.",
-                "stop_id_searched": stop_id
-            }), 404
-
-    except Exception as e:
-        return jsonify({"error": f"An unexpected error occurred during debug: {e}"}), 500
-
-@app.route('/debug/line/<line_prefix>')
-def debug_line(line_prefix):
-    try:
-        feed = gtfs_realtime_pb2.FeedMessage()
-        response = requests.get(GTFS_RT_URL)
-        response.raise_for_status()
-        feed.ParseFromString(response.content)
-
-        line_data = []
-
-        for entity in feed.entity:
-            if entity.HasField('trip_update') and entity.trip_update.trip.trip_id.startswith(line_prefix):
-                trip_id = entity.trip_update.trip.trip_id
-                stop_updates = []
-                for stop_time_update in entity.trip_update.stop_time_update:
-                    stop_updates.append(str(stop_time_update).replace('\n', ', '))
-                
-                line_data.append({
-                    "trip_id": trip_id,
-                    "stop_time_updates": stop_updates
-                })
-        
-        if line_data:
-            return jsonify(line_data)
-        else:
-            return jsonify({
-                "message": "No trip updates found for the specified line_prefix.",
-                "line_prefix_searched": line_prefix
-            }), 404
-
-    except Exception as e:
-        return jsonify({"error": f"An unexpected error occurred during debug: {e}"}), 500
-
-@app.route('/debug/all_stops')
-def debug_all_stops():
-    try:
-        feed = gtfs_realtime_pb2.FeedMessage()
-        response = requests.get(GTFS_RT_URL)
-        response.raise_for_status()
-        feed.ParseFromString(response.content)
-
-        stops = set()
-
-        for entity in feed.entity:
-            if entity.HasField('trip_update'):
-                for stop_time_update in entity.trip_update.stop_time_update:
-                    stops.add(stop_time_update.stop_id)
-        
-        return jsonify(sorted(list(stops)))
-
-    except Exception as e:
-        return jsonify({"error": f"An unexpected error occurred during debug: {e}"}), 500
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 3000))
-    app.run(host='0.0.0.0', port=port)
+if __name__ == '__main__':
+    app.run(debug=True, port=int(os.environ.get("PORT", 5000)))
